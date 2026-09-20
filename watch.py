@@ -93,7 +93,7 @@ def _model_works(name):
                           json={"contents": [{"parts": [{"text": "ping"}]}],
                                 "generationConfig": {"maxOutputTokens": 5}},
                           timeout=TIMEOUT)
-        return r.status_code == 200
+        return r.status_code != 404      # 404 = model doesn't exist; 503/429 = exists but busy
     except Exception:
         return False
 
@@ -114,7 +114,7 @@ def resolve_model():
             if ("generateContent" in m.get("supportedGenerationMethods", [])
                     and name not in candidates):
                 (extra_flash if "flash" in name else extra_other).append(name)
-        candidates += sorted(extra_flash) + sorted(extra_other)
+        candidates += sorted(extra_flash, key=lambda n: ("preview" in n, n)) + sorted(extra_other)
     except Exception as e:
         print(f"  model list failed ({e}); trying defaults", file=sys.stderr)
 
@@ -148,12 +148,14 @@ def classify_ai(text):
             "responseMimeType": "application/json",   # force clean JSON, no ``` fences
         },
     }
-    for attempt in range(2):   # one retry if the free tier rate-limits us
+    last_err = None
+    for attempt in range(3):   # retry when Google is busy/overloaded
         try:
             r = requests.post(url, params={"key": GEMINI_API_KEY},
                               json=body, timeout=TIMEOUT)
-            if r.status_code == 429 and attempt == 0:
-                time.sleep(20)          # hit the per-minute limit — wait, then retry once
+            if r.status_code in (429, 500, 502, 503):   # busy — back off and retry
+                last_err = f"{r.status_code} {r.reason}"
+                time.sleep(4 * (attempt + 1))           # 4s, 8s, 12s
                 continue
             r.raise_for_status()
             raw = r.json()["candidates"][0]["content"]["parts"][0]["text"]
@@ -161,8 +163,9 @@ def classify_ai(text):
             status = json.loads(raw).get("status", UNKNOWN)
             return status if status in (OPEN, REGISTER, CLOSED, UNKNOWN) else UNKNOWN
         except Exception as e:
-            print(f"  ai classify failed ({e}); using keywords", file=sys.stderr)
-            return classify_keywords(text)
+            last_err = e
+            break                                       # non-retryable — stop
+    print(f"  ai classify failed ({last_err}); using keywords", file=sys.stderr)
     return classify_keywords(text)
 
 
