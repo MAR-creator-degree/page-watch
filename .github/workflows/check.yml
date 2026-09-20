@@ -1,0 +1,37 @@
+name: apprentice-watch
+
+on:
+  schedule:
+    # times are UTC. GitHub cron can drift ~5-15 min.
+    - cron: "7 7-19/2 * * *"  # daytime: every 2h at 07,09,11,13,15,17,19 UTC
+    - cron: "7 1 * * *"       # overnight: one run at 01 UTC -> keeps gaps ~6h
+  workflow_dispatch: {}       # lets you run it manually — use this for the first baseline
+
+permissions:
+  contents: write             # needed to commit the state file back to the repo
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run watcher
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # optional
+        run: python watch.py
+
+      - name: Save state
+        run: |
+          git config user.name "apprentice-watch"
+          git config user.email "bot@users.noreply.github.com"
+          git add state/seen.json
+          git commit -m "update state" || echo "no changes to commit"
+          git push || echo "nothing to push"
