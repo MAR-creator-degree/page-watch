@@ -10,9 +10,8 @@ you get pinged ONCE per opening, not every run.
 Runs free on GitHub Actions — see .github/workflows/check.yml.
 
 Classification:
-  - If GEMINI_API_KEY is set, Google Gemini reads the page text and decides
+  - If ANTHROPIC_API_KEY is set, Claude reads the page text and decides
     open / register-interest / closed / unknown (handles nuance keywords miss).
-    Uses the free Google AI Studio tier — no billing needed.
   - If not, a keyword fallback is used (free, no API key, slightly dumber).
 """
 
@@ -31,14 +30,9 @@ FIRMS_FILE = Path("firms.json")
 STATE_FILE = Path("state/seen.json")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC")                 # REQUIRED
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")         # optional (smarter than keywords)
-# Model names change often and vary by project, so instead of hardcoding one we
-# ask the API which models this key can actually use and pick the best available.
-GEMINI_MODEL = None                                       # resolved at runtime (see resolve_model)
-GEMINI_MODEL_PREFS = ["gemini-2.5-flash-lite", "gemini-2.5-flash",
-                      "gemini-flash-latest", "gemini-2.0-flash"]
-REQUEST_SPACING = 5.0        # seconds between firms — polite to sites AND keeps
-                             # us under Gemini's free per-minute request limit
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")   # optional (smarter than keywords)
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"                # cheap + fast, fine for this
+REQUEST_SPACING = 2.0        # seconds between firms — be polite to sites, avoid blocks
 UA = "Mozilla/5.0 (apprentice-watch; personal apprenticeship alert)"
 TIMEOUT = 30
 
@@ -84,95 +78,40 @@ def classify_keywords(text):
     return UNKNOWN
 
 
-def _model_works(name):
-    """Real generateContent ping — returns True only if the model actually answers."""
-    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{name}:generateContent")
-    try:
-        r = requests.post(url, params={"key": GEMINI_API_KEY},
-                          json={"contents": [{"parts": [{"text": "ping"}]}],
-                                "generationConfig": {"maxOutputTokens": 5}},
-                          timeout=TIMEOUT)
-        return r.status_code != 404      # 404 = model doesn't exist; 503/429 = exists but busy
-    except Exception:
-        return False
-
-
-def resolve_model():
-    """Pick a model that ACTUALLY responds. The models list can advertise models
-    that then 404 on use, so we test each candidate with a real call and take the
-    first that works."""
-    candidates = list(GEMINI_MODEL_PREFS)
-    # also pull anything else the API advertises, so new model names get picked up
-    try:
-        r = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
-                         params={"key": GEMINI_API_KEY}, timeout=TIMEOUT)
-        r.raise_for_status()
-        extra_flash, extra_other = [], []
-        for m in r.json().get("models", []):
-            name = m["name"].split("/")[-1]
-            if ("generateContent" in m.get("supportedGenerationMethods", [])
-                    and name not in candidates):
-                (extra_flash if "flash" in name else extra_other).append(name)
-        candidates += sorted(extra_flash, key=lambda n: ("preview" in n, n)) + sorted(extra_other)
-    except Exception as e:
-        print(f"  model list failed ({e}); trying defaults", file=sys.stderr)
-
-    for name in candidates:
-        if _model_works(name):
-            return name
-    return None   # nothing worked -> classify() will use keywords
-
-
 def classify_ai(text):
     snippet = text[:6000]   # keep the call cheap
-    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL}:generateContent")
-    prompt = (
-        "You are checking a company careers page for a DEGREE APPRENTICESHIP "
-        "(school-leaver / pre-university) role. Based ONLY on the text, can an "
-        "application be SUBMITTED right now?\n"
-        'Return strict JSON, no prose: '
-        '{"status": "open"|"register_interest"|"closed"|"unknown"}\n'
-        "- open = you can submit an application now\n"
-        "- register_interest = only 'register interest' / 'notify me' / 'coming soon'\n"
-        "- closed = applications closed or expired\n"
-        "- unknown = cannot tell / page looks empty\n\n"
-        f"PAGE TEXT:\n{snippet}"
-    )
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0,
-            "maxOutputTokens": 512,
-            "responseMimeType": "application/json",   # force clean JSON, no ``` fences
-        },
-    }
-    last_err = None
-    for attempt in range(3):   # retry when Google is busy/overloaded
-        try:
-            r = requests.post(url, params={"key": GEMINI_API_KEY},
-                              json=body, timeout=TIMEOUT)
-            if r.status_code in (429, 500, 502, 503):   # busy — back off and retry
-                last_err = f"{r.status_code} {r.reason}"
-                time.sleep(4 * (attempt + 1))           # 4s, 8s, 12s
-                continue
-            r.raise_for_status()
-            raw = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-            raw = re.sub(r"^```json|```", "", raw.strip()).strip()
-            status = json.loads(raw).get("status", UNKNOWN)
-            return status if status in (OPEN, REGISTER, CLOSED, UNKNOWN) else UNKNOWN
-        except Exception as e:
-            last_err = e
-            break                                       # non-retryable — stop
-    print(f"  ai classify failed ({last_err}); using keywords", file=sys.stderr)
-    return classify_keywords(text)
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        msg = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=200,
+            messages=[{"role": "user", "content": (
+                "You are checking a company careers page for a DEGREE APPRENTICESHIP "
+                "(school-leaver / pre-university) role. Based ONLY on the text, can an "
+                "application be SUBMITTED right now?\n"
+                'Return strict JSON, no prose: '
+                '{"status": "open"|"register_interest"|"closed"|"unknown"}\n'
+                "- open = you can submit an application now\n"
+                "- register_interest = only 'register interest' / 'notify me' / 'coming soon'\n"
+                "- closed = applications closed or expired\n"
+                "- unknown = cannot tell / page looks empty\n\n"
+                f"PAGE TEXT:\n{snippet}"
+            )}],
+        )
+        raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        raw = re.sub(r"^```json|```", "", raw.strip()).strip()
+        status = json.loads(raw).get("status", UNKNOWN)
+        return status if status in (OPEN, REGISTER, CLOSED, UNKNOWN) else UNKNOWN
+    except Exception as e:
+        print(f"  ai classify failed ({e}); using keywords", file=sys.stderr)
+        return classify_keywords(text)
 
 
 def classify(text):
     if not text or len(text) < 200:
         return UNKNOWN   # near-empty = probably a JS shell we can't read
-    return classify_ai(text) if (GEMINI_API_KEY and GEMINI_MODEL) else classify_keywords(text)
+    return classify_ai(text) if ANTHROPIC_API_KEY else classify_keywords(text)
 
 
 def notify(title, message, url=None, priority="default", tags="briefcase"):
@@ -194,14 +133,6 @@ def notify(title, message, url=None, priority="default", tags="briefcase"):
 
 
 def main():
-    if GEMINI_API_KEY:
-        global GEMINI_MODEL
-        GEMINI_MODEL = resolve_model()
-        if GEMINI_MODEL:
-            print(f"Using Gemini model: {GEMINI_MODEL}")
-        else:
-            print("No working Gemini model found — falling back to keywords", file=sys.stderr)
-
     firms = json.loads(FIRMS_FILE.read_text())
     first_run = not STATE_FILE.exists()
     state = {} if first_run else json.loads(STATE_FILE.read_text())
