@@ -32,11 +32,13 @@ STATE_FILE = Path("state/seen.json")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC")                 # REQUIRED
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")         # optional (smarter than keywords)
-GEMINI_MODEL = "gemini-2.5-flash-lite"                    # free-tier friendly, fine for this
-GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
-              f"{GEMINI_MODEL}:generateContent")
+# Model names change often and vary by project, so instead of hardcoding one we
+# ask the API which models this key can actually use and pick the best available.
+GEMINI_MODEL = None                                       # resolved at runtime (see resolve_model)
+GEMINI_MODEL_PREFS = ["gemini-2.5-flash-lite", "gemini-2.5-flash",
+                      "gemini-flash-latest", "gemini-2.0-flash"]
 REQUEST_SPACING = 5.0        # seconds between firms — polite to sites AND keeps
-                             # us under Gemini's free ~15 requests/min limit
+                             # us under Gemini's free per-minute request limit
 UA = "Mozilla/5.0 (apprentice-watch; personal apprenticeship alert)"
 TIMEOUT = 30
 
@@ -82,8 +84,35 @@ def classify_keywords(text):
     return UNKNOWN
 
 
+def resolve_model():
+    """Ask the API which models this key can use for generateContent and pick the
+    best available (cheapest/fastest first). Avoids hardcoding a name that 404s."""
+    try:
+        r = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
+                         params={"key": GEMINI_API_KEY}, timeout=TIMEOUT)
+        r.raise_for_status()
+        usable = {
+            m["name"].split("/")[-1]
+            for m in r.json().get("models", [])
+            if "generateContent" in m.get("supportedGenerationMethods", [])
+        }
+        for pref in GEMINI_MODEL_PREFS:
+            if pref in usable:
+                return pref
+        flash = sorted(x for x in usable if "flash" in x)   # any flash model
+        if flash:
+            return flash[0]
+        if usable:
+            return sorted(usable)[0]                         # last resort: anything usable
+    except Exception as e:
+        print(f"  model discovery failed ({e}); defaulting", file=sys.stderr)
+    return "gemini-2.5-flash"
+
+
 def classify_ai(text):
     snippet = text[:6000]   # keep the call cheap
+    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{GEMINI_MODEL}:generateContent")
     prompt = (
         "You are checking a company careers page for a DEGREE APPRENTICESHIP "
         "(school-leaver / pre-university) role. Based ONLY on the text, can an "
@@ -106,7 +135,7 @@ def classify_ai(text):
     }
     for attempt in range(2):   # one retry if the free tier rate-limits us
         try:
-            r = requests.post(GEMINI_URL, params={"key": GEMINI_API_KEY},
+            r = requests.post(url, params={"key": GEMINI_API_KEY},
                               json=body, timeout=TIMEOUT)
             if r.status_code == 429 and attempt == 0:
                 time.sleep(20)          # hit the per-minute limit — wait, then retry once
@@ -147,6 +176,11 @@ def notify(title, message, url=None, priority="default", tags="briefcase"):
 
 
 def main():
+    if GEMINI_API_KEY:
+        global GEMINI_MODEL
+        GEMINI_MODEL = resolve_model()
+        print(f"Using Gemini model: {GEMINI_MODEL}")
+
     firms = json.loads(FIRMS_FILE.read_text())
     first_run = not STATE_FILE.exists()
     state = {} if first_run else json.loads(STATE_FILE.read_text())
