@@ -88,14 +88,17 @@ def classify_ai(text):
             max_tokens=200,
             messages=[{"role": "user", "content": (
                 "You are checking a company careers page for a DEGREE APPRENTICESHIP "
-                "(school-leaver / pre-university) role. Based ONLY on the text, can an "
-                "application be SUBMITTED right now?\n"
+                "(school-leaver / pre-university) role. Decide the application status from the TEXT ONLY.\n"
                 'Return strict JSON, no prose: '
                 '{"status": "open"|"register_interest"|"closed"|"unknown"}\n'
-                "- open = you can submit an application now\n"
-                "- register_interest = only 'register interest' / 'notify me' / 'coming soon'\n"
-                "- closed = applications closed or expired\n"
-                "- unknown = cannot tell / page looks empty\n\n"
+                "- open = there is a LIVE vacancy you can apply to NOW, shown by a concrete signal: "
+                "an application deadline / closing date, an explicit 'applications are open / now "
+                "accepting applications', or a dated current vacancy. A permanent 'Apply now' button "
+                "on an evergreen programme description, with NO deadline or dates, does NOT count as open.\n"
+                "- register_interest = no live vacancy yet — 'register interest' / 'notify me' / "
+                "'coming soon' / 'applications open in <future>'\n"
+                "- closed = applications closed or expired, or the deadline has passed\n"
+                "- unknown = just a general programme description with no application status, or empty page\n\n"
                 f"PAGE TEXT:\n{snippet}"
             )}],
         )
