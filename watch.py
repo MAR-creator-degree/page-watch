@@ -84,29 +84,44 @@ def classify_keywords(text):
     return UNKNOWN
 
 
+def _model_works(name):
+    """Real generateContent ping — returns True only if the model actually answers."""
+    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{name}:generateContent")
+    try:
+        r = requests.post(url, params={"key": GEMINI_API_KEY},
+                          json={"contents": [{"parts": [{"text": "ping"}]}],
+                                "generationConfig": {"maxOutputTokens": 5}},
+                          timeout=TIMEOUT)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
 def resolve_model():
-    """Ask the API which models this key can use for generateContent and pick the
-    best available (cheapest/fastest first). Avoids hardcoding a name that 404s."""
+    """Pick a model that ACTUALLY responds. The models list can advertise models
+    that then 404 on use, so we test each candidate with a real call and take the
+    first that works."""
+    candidates = list(GEMINI_MODEL_PREFS)
+    # also pull anything else the API advertises, so new model names get picked up
     try:
         r = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
                          params={"key": GEMINI_API_KEY}, timeout=TIMEOUT)
         r.raise_for_status()
-        usable = {
-            m["name"].split("/")[-1]
-            for m in r.json().get("models", [])
-            if "generateContent" in m.get("supportedGenerationMethods", [])
-        }
-        for pref in GEMINI_MODEL_PREFS:
-            if pref in usable:
-                return pref
-        flash = sorted(x for x in usable if "flash" in x)   # any flash model
-        if flash:
-            return flash[0]
-        if usable:
-            return sorted(usable)[0]                         # last resort: anything usable
+        extra_flash, extra_other = [], []
+        for m in r.json().get("models", []):
+            name = m["name"].split("/")[-1]
+            if ("generateContent" in m.get("supportedGenerationMethods", [])
+                    and name not in candidates):
+                (extra_flash if "flash" in name else extra_other).append(name)
+        candidates += sorted(extra_flash) + sorted(extra_other)
     except Exception as e:
-        print(f"  model discovery failed ({e}); defaulting", file=sys.stderr)
-    return "gemini-2.5-flash"
+        print(f"  model list failed ({e}); trying defaults", file=sys.stderr)
+
+    for name in candidates:
+        if _model_works(name):
+            return name
+    return None   # nothing worked -> classify() will use keywords
 
 
 def classify_ai(text):
@@ -129,7 +144,7 @@ def classify_ai(text):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0,
-            "maxOutputTokens": 200,
+            "maxOutputTokens": 512,
             "responseMimeType": "application/json",   # force clean JSON, no ``` fences
         },
     }
@@ -154,7 +169,7 @@ def classify_ai(text):
 def classify(text):
     if not text or len(text) < 200:
         return UNKNOWN   # near-empty = probably a JS shell we can't read
-    return classify_ai(text) if GEMINI_API_KEY else classify_keywords(text)
+    return classify_ai(text) if (GEMINI_API_KEY and GEMINI_MODEL) else classify_keywords(text)
 
 
 def notify(title, message, url=None, priority="default", tags="briefcase"):
@@ -179,7 +194,10 @@ def main():
     if GEMINI_API_KEY:
         global GEMINI_MODEL
         GEMINI_MODEL = resolve_model()
-        print(f"Using Gemini model: {GEMINI_MODEL}")
+        if GEMINI_MODEL:
+            print(f"Using Gemini model: {GEMINI_MODEL}")
+        else:
+            print("No working Gemini model found — falling back to keywords", file=sys.stderr)
 
     firms = json.loads(FIRMS_FILE.read_text())
     first_run = not STATE_FILE.exists()
