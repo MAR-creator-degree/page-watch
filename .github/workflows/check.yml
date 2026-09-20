@@ -25,7 +25,7 @@ jobs:
       - name: Run watcher
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # optional
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # optional, free tier
         run: python watch.py
 
       - name: Save state
