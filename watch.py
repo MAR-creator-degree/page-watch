@@ -10,8 +10,9 @@ you get pinged ONCE per opening, not every run.
 Runs free on GitHub Actions — see .github/workflows/check.yml.
 
 Classification:
-  - If ANTHROPIC_API_KEY is set, Claude reads the page text and decides
+  - If GEMINI_API_KEY is set, Google Gemini reads the page text and decides
     open / register-interest / closed / unknown (handles nuance keywords miss).
+    Uses the free Google AI Studio tier — no billing needed.
   - If not, a keyword fallback is used (free, no API key, slightly dumber).
 """
 
@@ -30,8 +31,12 @@ FIRMS_FILE = Path("firms.json")
 STATE_FILE = Path("state/seen.json")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC")                 # REQUIRED
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")   # optional (better)
-REQUEST_SPACING = 2.0        # seconds between firms — be polite, avoid blocks
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")         # optional (smarter than keywords)
+GEMINI_MODEL = "gemini-2.5-flash-lite"                    # free-tier friendly, fine for this
+GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
+              f"{GEMINI_MODEL}:generateContent")
+REQUEST_SPACING = 5.0        # seconds between firms — polite to sites AND keeps
+                             # us under Gemini's free ~15 requests/min limit
 UA = "Mozilla/5.0 (apprentice-watch; personal apprenticeship alert)"
 TIMEOUT = 30
 
@@ -79,42 +84,48 @@ def classify_keywords(text):
 
 def classify_ai(text):
     snippet = text[:6000]   # keep the call cheap
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",   # cheap + fast, fine for this
-            max_tokens=200,
-            messages=[{
-                "role": "user",
-                "content": (
-                    "You are checking a company careers page for a DEGREE APPRENTICESHIP "
-                    "(school-leaver / pre-university) role. Based ONLY on the text, can an "
-                    "application be SUBMITTED right now?\n"
-                    'Return strict JSON, no prose: '
-                    '{"status": "open"|"register_interest"|"closed"|"unknown", '
-                    '"deadline": "<text or null>"}\n'
-                    "- open = you can submit an application now\n"
-                    "- register_interest = only 'register interest' / 'notify me' / 'coming soon'\n"
-                    "- closed = applications closed or expired\n"
-                    "- unknown = cannot tell / page looks empty\n\n"
-                    f"PAGE TEXT:\n{snippet}"
-                ),
-            }],
-        )
-        raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-        raw = re.sub(r"^```json|```", "", raw.strip()).strip()
-        status = json.loads(raw).get("status", UNKNOWN)
-        return status if status in (OPEN, REGISTER, CLOSED, UNKNOWN) else UNKNOWN
-    except Exception as e:
-        print(f"  ai classify failed ({e}); using keywords", file=sys.stderr)
-        return classify_keywords(text)
+    prompt = (
+        "You are checking a company careers page for a DEGREE APPRENTICESHIP "
+        "(school-leaver / pre-university) role. Based ONLY on the text, can an "
+        "application be SUBMITTED right now?\n"
+        'Return strict JSON, no prose: '
+        '{"status": "open"|"register_interest"|"closed"|"unknown"}\n'
+        "- open = you can submit an application now\n"
+        "- register_interest = only 'register interest' / 'notify me' / 'coming soon'\n"
+        "- closed = applications closed or expired\n"
+        "- unknown = cannot tell / page looks empty\n\n"
+        f"PAGE TEXT:\n{snippet}"
+    )
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0,
+            "maxOutputTokens": 200,
+            "responseMimeType": "application/json",   # force clean JSON, no ``` fences
+        },
+    }
+    for attempt in range(2):   # one retry if the free tier rate-limits us
+        try:
+            r = requests.post(GEMINI_URL, params={"key": GEMINI_API_KEY},
+                              json=body, timeout=TIMEOUT)
+            if r.status_code == 429 and attempt == 0:
+                time.sleep(20)          # hit the per-minute limit — wait, then retry once
+                continue
+            r.raise_for_status()
+            raw = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            raw = re.sub(r"^```json|```", "", raw.strip()).strip()
+            status = json.loads(raw).get("status", UNKNOWN)
+            return status if status in (OPEN, REGISTER, CLOSED, UNKNOWN) else UNKNOWN
+        except Exception as e:
+            print(f"  ai classify failed ({e}); using keywords", file=sys.stderr)
+            return classify_keywords(text)
+    return classify_keywords(text)
 
 
 def classify(text):
     if not text or len(text) < 200:
         return UNKNOWN   # near-empty = probably a JS shell we can't read
-    return classify_ai(text) if ANTHROPIC_API_KEY else classify_keywords(text)
+    return classify_ai(text) if GEMINI_API_KEY else classify_keywords(text)
 
 
 def notify(title, message, url=None, priority="default", tags="briefcase"):
