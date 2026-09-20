@@ -100,8 +100,8 @@ def classify_ai(text):
             )}],
         )
         raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-        raw = re.sub(r"^```json|```", "", raw.strip()).strip()
-        status = json.loads(raw).get("status", UNKNOWN)
+        m = re.search(r"\{[^{}]*\}", raw, re.DOTALL)   # grab just the JSON object, ignore any prose
+        status = json.loads(m.group()).get("status", UNKNOWN) if m else UNKNOWN
         return status if status in (OPEN, REGISTER, CLOSED, UNKNOWN) else UNKNOWN
     except Exception as e:
         print(f"  ai classify failed ({e}); using keywords", file=sys.stderr)
