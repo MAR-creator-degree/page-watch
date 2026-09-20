@@ -121,7 +121,11 @@ def notify(title, message, url=None, priority="default", tags="briefcase"):
     if not NTFY_TOPIC:
         print("  NTFY_TOPIC not set; would notify:", title, "-", message, file=sys.stderr)
         return
-    headers = {"Title": title, "Priority": priority, "Tags": tags}
+    # HTTP headers must be latin-1, so an emoji in the title crashes the send.
+    # ntfy already renders the Tags value as an emoji in front of the title,
+    # so we just strip any non-latin-1 chars (emoji) out of the Title header.
+    safe_title = title.encode("latin-1", "ignore").decode("latin-1").strip()
+    headers = {"Title": safe_title, "Priority": priority, "Tags": tags}
     if url:
         headers["Click"] = url
     try:
