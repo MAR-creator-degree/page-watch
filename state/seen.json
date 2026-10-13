@@ -8,7 +8,8 @@
     "hash": "318ad7d4a704e478c52cd7ed03c93f15ea71d3f5c8b053f033a4c2a9cd659c1c"
   },
   "JPMorgan (Technology)": {
-    "status": "error"
+    "status": "unknown",
+    "hash": "49f7652e5e6cd5d78b749cf1d59f69c2d0b30a720c8264b3a572803b8250291a"
   },
   "Deutsche Bank": {
     "status": "open",
