@@ -1,7 +1,7 @@
 {
   "Goldman Sachs": {
     "status": "open",
-    "hash": "171d0b61a555958ee1aaa7facb8a7fb6582cfc0c1a9b2ae2fc387999a656eae3"
+    "hash": "08a29652218409a85bd7faa20243b9fe96f71d967afac68456cc5628cfacea73"
   },
   "JPMorgan (Financial Services)": {
     "status": "unknown",
@@ -13,7 +13,7 @@
   },
   "Deutsche Bank": {
     "status": "open",
-    "hash": "329d6057c63945054693484196c715bc926222f82294acb27e7d695682f89c18"
+    "hash": "4ab7343212fd3e1f54157fb2e7acbda213873d72aa1d6a9d76f69aa2493e2737"
   },
   "Citi": {
     "status": "unknown",
